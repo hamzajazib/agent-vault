@@ -48,9 +48,9 @@ Visit `http://localhost:8080` to reach the management UI through the reverse pro
 | Var | Default | Description |
 |-----|---------|-------------|
 | `PORT` | `8080` | Port the reverse proxy listens on. Most PaaS providers inject this automatically. |
-| `AV_UPSTREAM` | (required) | `host:port` of Agent Vault's management API on the private network. |
+| `AGENT_VAULT_UPSTREAM` | (required) | `host:port` of Agent Vault's management API on the private network. |
 
-Examples for `AV_UPSTREAM`:
+Examples for `AGENT_VAULT_UPSTREAM`:
 
 - Render: `agent-vault-ab12:14321`
 - Fly.io: `agent-vault.internal:14321`
@@ -97,7 +97,7 @@ curl -fsS http://localhost:8080/health        # → {"status":"ok"}
 curl -i -X CONNECT http://localhost:8080/     # → 405
 ```
 
-To verify trust-header stripping in isolation, uncomment the `echo` service in `docker-compose.yml`, change the reverse proxy's `AV_UPSTREAM` to `echo:8080`, then send a request with `X-Forwarded-User: attacker` and `Authorization: Bearer should-pass-through`. The echoed headers should show `Authorization` present and `X-Forwarded-User` absent.
+To verify trust-header stripping in isolation, uncomment the `echo` service in `docker-compose.yml`, change the reverse proxy's `AGENT_VAULT_UPSTREAM` to `echo:8080`, then send a request with `X-Forwarded-User: attacker` and `Authorization: Bearer should-pass-through`. The echoed headers should show `Authorization` present and `X-Forwarded-User` absent.
 
 ## Adapt
 

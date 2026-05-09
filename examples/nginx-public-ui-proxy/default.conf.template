@@ -1,5 +1,5 @@
 upstream agent_vault {
-    server ${AV_UPSTREAM};
+    server ${AGENT_VAULT_UPSTREAM};
     keepalive 16;
 }
 
