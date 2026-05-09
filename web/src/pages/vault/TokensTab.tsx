@@ -349,7 +349,7 @@ function MintTokenButton({
               />
             </div>
             <p className="text-xs text-text-dim">
-              Use with <code className="text-text-muted">AGENT_VAULT_SESSION_TOKEN</code>, or in
+              Use with <code className="text-text-muted">AGENT_VAULT_TOKEN</code>, or in
               an <code className="text-text-muted">HTTPS_PROXY</code> URL as the userinfo.
             </p>
           </div>
@@ -359,7 +359,7 @@ function MintTokenButton({
               <Input
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
-                placeholder="claude-code laptop"
+                placeholder="claude-code"
                 maxLength={100}
                 autoFocus
               />

@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
 // expectedRunFlags is the single source of truth for flags both `vault run`
@@ -335,4 +337,108 @@ func envMap(env []string) map[string]string {
 		}
 	}
 	return m
+}
+
+// newRunCmdForTest builds a run command with --vault registered locally so
+// tests don't depend on the persistent flag inherited from vaultCmd.
+func newRunCmdForTest() *cobra.Command {
+	c := newRunCmd("test")
+	c.Flags().String("vault", "", "target vault")
+	return c
+}
+
+func TestResolveVaultForAgentMode(t *testing.T) {
+	t.Run("flag wins", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_VAULT", "env-vault")
+		c := newRunCmdForTest()
+		_ = c.Flags().Set("vault", "flag-vault")
+		got, err := resolveVaultForAgentMode(c)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "flag-vault" {
+			t.Errorf("got %q, want flag-vault", got)
+		}
+	})
+
+	t.Run("env when no flag", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_VAULT", "env-vault")
+		c := newRunCmdForTest()
+		got, err := resolveVaultForAgentMode(c)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != "env-vault" {
+			t.Errorf("got %q, want env-vault", got)
+		}
+	})
+
+	t.Run("error when neither set", func(t *testing.T) {
+		t.Setenv("AGENT_VAULT_VAULT", "")
+		c := newRunCmdForTest()
+		_, err := resolveVaultForAgentMode(c)
+		if err == nil {
+			t.Fatal("expected error when no vault is configured")
+		}
+		if !strings.Contains(err.Error(), "AGENT_VAULT_VAULT") {
+			t.Errorf("error should mention AGENT_VAULT_VAULT; got: %v", err)
+		}
+	})
+}
+
+// TestStripEnvKeys_AgentVaultInjectedKeys is the AGENT_VAULT_* analogue of
+// TestAugmentEnvWithMITM_DedupesParentEnv. In agent mode the parent env is
+// guaranteed to already carry AGENT_VAULT_TOKEN/ADDR/VAULT (that's how agent
+// mode is detected), so without this strip the parent's stale value would
+// silently win in the child via POSIX getenv first-match semantics — most
+// dangerously, --vault would be overridden by a stale AGENT_VAULT_VAULT.
+func TestStripEnvKeys_AgentVaultInjectedKeys(t *testing.T) {
+	parent := []string{
+		"AGENT_VAULT_TOKEN=stale-tok",
+		"AGENT_VAULT_SESSION_TOKEN=stale-legacy",
+		"AGENT_VAULT_ADDR=https://stale.example/",
+		"AGENT_VAULT_VAULT=stale-vault",
+		"UNRELATED=keep-me",
+	}
+	stripped := stripEnvKeys(parent, agentVaultInjectedKeys)
+	for _, kv := range stripped {
+		key := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			key = kv[:i]
+		}
+		if _, dropped := agentVaultInjectedKeys[key]; dropped {
+			t.Errorf("expected %q to be stripped from parent env, still present as %q", key, kv)
+		}
+	}
+	if !contains(stripped, "UNRELATED=keep-me") {
+		t.Error("unrelated parent env vars must be preserved")
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// TestRunCmdAgentMode_RejectsTTL exercises the runCmdRunE early-exit when a
+// pre-supplied token is used together with --ttl. The token's lifetime is
+// fixed at mint time, so --ttl is meaningless in agent mode.
+func TestRunCmdAgentMode_RejectsTTL(t *testing.T) {
+	t.Setenv("AGENT_VAULT_TOKEN", "tok123")
+	t.Setenv("AGENT_VAULT_ADDR", "http://example.invalid")
+	t.Setenv("AGENT_VAULT_VAULT", "myvault")
+
+	c := newRunCmd("test")
+	_ = c.Flags().Set("ttl", "3600")
+	err := runCmdRunE(c, []string{"true"})
+	if err == nil {
+		t.Fatal("expected error rejecting --ttl in agent mode")
+	}
+	if !strings.Contains(err.Error(), "--ttl has no effect") {
+		t.Errorf("error should mention --ttl rejection; got: %v", err)
+	}
 }
