@@ -5,7 +5,7 @@ description: "Install Agent Vault, start a server, and log in."
 
 import InstallCommand from "/snippets/install-command.mdx";
 
-Agent Vault ships as a single binary that acts as both a server and CLI client. Install it once, then use `agent-vault server` to run a server and `agent-vault auth login` to interact with it.
+Agent Vault ships as a single binary that acts as both a server and CLI client.
 
 ## Install
 
@@ -17,10 +17,6 @@ Agent Vault ships as a single binary that acts as both a server and CLI client. 
     <InstallCommand />
 
     Supports macOS (Intel + Apple Silicon) and Linux (x86\_64 + ARM64).
-
-    <Note>
-      The install script sends an anonymous beacon (OS, architecture, version). Set `AGENT_VAULT_NO_TELEMETRY=1` in front of `sh` to opt out.
-    </Note>
 
   </Tab>
   <Tab title="Docker">
