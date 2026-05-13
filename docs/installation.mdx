@@ -1,13 +1,13 @@
 ---
-title: "Installation"
-description: "Install Agent Vault, start a server, and log in."
+title: "Deploy Agent Vault"
+description: "Get a server running in under a minute."
 ---
 
 import InstallCommand from "/snippets/install-command.mdx";
 
 Agent Vault ships as a single binary that acts as both a server and CLI client.
 
-## Install
+Each install method below configures a master password at startup. Store it somewhere safe. The password wraps the [data encryption key](/learn/security) and is held only in memory once the server is unlocked.
 
 <Tabs>
   <Tab title="Script">
@@ -15,15 +15,21 @@ Agent Vault ships as a single binary that acts as both a server and CLI client.
 
     <InstallCommand />
 
-  </Tab>
-  <Tab title="Docker">
-    No build tools required. Pull the image and run:
+    Start the Agent Vault server (pass `-d` to run in the background):
 
     ```bash
-    docker run -it -p 14321:14321 -v agent-vault-data:/data infisical/agent-vault
+    agent-vault server
     ```
 
-    See [Docker deployment](/self-hosting/docker) for configuration options, Docker Compose, and volume management.
+  </Tab>
+  <Tab title="Docker">
+    ```bash
+    docker run -it -p 14321:14321 -p 14322:14322 \
+      -e AGENT_VAULT_MASTER_PASSWORD=your-password \
+      -v agent-vault-data:/data infisical/agent-vault
+    ```
+
+    See [Docker deployment](/self-hosting/docker) for Compose, volumes, and full configuration.
 
   </Tab>
   <Tab title="From source">
@@ -36,123 +42,34 @@ Agent Vault ships as a single binary that acts as both a server and CLI client.
     sudo mv agent-vault /usr/local/bin/
     ```
 
-  </Tab>
-</Tabs>
-
-Verify the installation:
-
-```bash
-agent-vault --help
-```
-
-## Verify a release (optional)
-
-Every release includes SHA-256 checksums and a [cosign](https://github.com/sigstore/cosign) signature for supply-chain security. No keys to manage - verification uses GitHub's OIDC identity.
-
-```bash
-# Download checksums.txt and checksums.txt.sig from the release page, then:
-
-# 1. Verify the binary hasn't been tampered with (portable across macOS and Linux)
-shasum -a 256 --ignore-missing -c checksums.txt
-
-# 2. Verify the checksums were signed by the Infisical/agent-vault GitHub Actions workflow
-cosign verify-blob \
-  --bundle checksums.txt.sig \
-  --certificate-identity-regexp "^https://github\.com/Infisical/agent-vault/\.github/workflows/release\.yml@refs/tags/" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  checksums.txt
-```
-
-## Upgrade
-
-<Tabs>
-  <Tab title="Script">
-    Re-run the same install command — the script detects your existing installation, stops the running server, backs up your database, and installs the latest version:
-
-    <InstallCommand />
-
-    Restart the server afterward:
+    Start the Agent Vault server (pass `-d` to run in the background):
 
     ```bash
     agent-vault server
     ```
 
   </Tab>
-  <Tab title="Docker">
-    Pull the latest image and recreate the container. Your data is preserved on the named volume:
-
-    ```bash
-    docker pull infisical/agent-vault:latest
-    docker stop agent-vault && docker rm agent-vault
-    docker run -it -p 14321:14321 -v agent-vault-data:/data infisical/agent-vault
-    ```
-
-  </Tab>
-  <Tab title="From source">
-    Pull the latest changes and rebuild:
-
-    ```bash
-    cd agent-vault
-    git pull
-    make build
-    sudo mv agent-vault /usr/local/bin/
-    ```
-
-  </Tab>
 </Tabs>
 
-Database migrations run automatically on server startup — no manual steps required.
+Agent Vault exposes two listeners: the HTTP API on `14321` and the transparent MITM proxy on `14322` (the canonical ingress for agents).
 
-## Start a server
+Open `http://localhost:14321/register` (or your server's hostname at port `14321` for a remote deploy) to create your account. The first user becomes the instance [owner](/learn/permissions#instance-roles) with admin on the default [vault](/learn/vaults).
 
-```bash
-agent-vault server
-```
+For remote deploys, set [`AGENT_VAULT_ADDR`](/self-hosting/environment-variables) to your public URL so invite links and MITM cert SANs match.
 
-On first run, Agent Vault generates a random **data encryption key (DEK)** that encrypts all [credentials](/learn/credentials) at rest with AES-256-GCM. You can optionally set a **master password** to wrap the DEK (leave it empty for passwordless mode). The master password is never stored on disk. For non-interactive or automated environments, set the `AGENT_VAULT_MASTER_PASSWORD` environment variable or pass `--password-stdin`. Omit it entirely for passwordless mode. See [environment variables](/self-hosting/environment-variables) for all options.
-
-The server listens on port `14321` for the HTTP API and web UI, and on port `14322` for the transparent HTTP/HTTPS proxy that agents' `HTTPS_PROXY` and `HTTP_PROXY` point at — the same listener handles `CONNECT` for `https://` upstreams and absolute-form forward-proxy requests for `http://` upstreams. Disable the transparent proxy with `--mitm-port 0`. See [transparent proxy setup](/self-hosting/local#transparent-proxy) for the CA-trust flow.
-
-To run in the background:
-
-```bash
-agent-vault server -d
-```
-
-To stop a background server:
-
-```bash
-agent-vault server stop
-```
-
-## Register and log in
-
-The first user to register becomes the instance [owner](/learn/permissions#instance-roles) with full admin privileges and is automatically granted [admin](/learn/permissions#vault-roles) on the default [vault](/learn/vaults).
-
-Any CLI command that needs authentication will walk you through registration and login automatically — just run the command you want and follow the prompts. You can also register explicitly:
-
-<Tabs>
-  <Tab title="CLI">
-    ```bash agent-vault auth register agent-vault auth login ```
-  </Tab>
-  <Tab title="Web UI">
-    Open [http://localhost:14321/register](http://localhost:14321/register) (or
-    the address you configured with `AGENT_VAULT_ADDR`) and create your account
-    from the browser.
-  </Tab>
-</Tabs>
-
-Subsequent users can self-register via `agent-vault auth register`, the web registration page, or be [invited to a vault](/learn/vaults#invite-users-to-a-vault) by a vault admin.
-
-Once registered, you can manage Agent Vault through either the **web dashboard** or entirely via the **[CLI](/reference/cli)**. Both give you full access to [services](/learn/services), [credentials](/learn/credentials), [agents](/agents/overview), and [proposal](/learn/proposals) approvals.
+<Tip>
+  Press enter at the prompt (or leave `AGENT_VAULT_MASTER_PASSWORD` unset on
+  Docker) for passwordless mode. The DEK is stored in plaintext, suitable for
+  environments where volume security is the trust boundary. See [environment
+  variables](/self-hosting/environment-variables) for all options.
+</Tip>
 
 ## Next steps
 
-<CardGroup cols={2}>
-  <Card title="Your first proposal" icon="sparkles" href="/first-proposal">
-    Invite an agent and approve your first request.
-  </Card>
+<CardGroup cols={1}>
   <Card title="Connect an agent" icon="robot" href="/quickstart/claude-code">
-    Agent-specific setup guides for Claude Code, Cursor, and more.
+    Setup guides for Claude Code, Cursor, Codex, and more.
   </Card>
 </CardGroup>
+
+Need to verify the release signature or upgrade later? See [Maintenance](/self-hosting/maintenance).

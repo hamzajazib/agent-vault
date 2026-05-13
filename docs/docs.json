@@ -53,6 +53,7 @@
               "self-hosting/docker",
               "self-hosting/fly-io",
               "self-hosting/environment-variables",
+              "self-hosting/maintenance",
               "guides/instance-settings",
               "guides/smtp"
             ]
@@ -97,6 +98,7 @@
     { "source": "/learn/policies", "destination": "/learn/services" },
     { "source": "/agents/persistent-agents", "destination": "/agents/overview" },
     { "source": "/how-it-works", "destination": "/" },
-    { "source": "/learn/connect-custom-agent", "destination": "/guides/connect-custom-agent" }
+    { "source": "/learn/connect-custom-agent", "destination": "/guides/connect-custom-agent" },
+    { "source": "/first-proposal", "destination": "/quickstart/claude-code" }
   ]
 }

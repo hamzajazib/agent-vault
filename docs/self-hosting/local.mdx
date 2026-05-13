@@ -113,38 +113,6 @@ agent-vault ca fetch | sudo security add-trusted-cert -d -r trustRoot \
 
 See the [CLI reference](/reference/cli#ca) for all `agent-vault ca fetch` flags.
 
-## Upgrade
+## Upgrade and verify
 
-Re-run the same install command — the script detects your existing installation, stops the running server, backs up your database, and installs the latest version:
-
-<InstallCommand />
-
-<Note>
-  The upgrade sends the same anonymous beacon as install. Set `AGENT_VAULT_NO_TELEMETRY=1` in front of `sh` to opt out.
-</Note>
-
-Restart the server afterward:
-
-```bash
-agent-vault server
-```
-
-Database migrations run automatically on server startup — no manual steps required.
-
-## Verify a release (optional)
-
-Every release includes SHA-256 checksums and a [cosign](https://github.com/sigstore/cosign) signature for supply-chain security. No keys to manage — verification uses GitHub's OIDC identity.
-
-```bash
-# Download checksums.txt and checksums.txt.sig from the release page, then:
-
-# 1. Verify the binary hasn't been tampered with (portable across macOS and Linux)
-shasum -a 256 --ignore-missing -c checksums.txt
-
-# 2. Verify the checksums were signed by the Infisical/agent-vault GitHub Actions workflow
-cosign verify-blob \
-  --bundle checksums.txt.sig \
-  --certificate-identity-regexp "^https://github\.com/Infisical/agent-vault/\.github/workflows/release\.yml@refs/tags/" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  checksums.txt
-```
+See [Maintenance](/self-hosting/maintenance) for upgrading an existing installation and verifying release signatures.
