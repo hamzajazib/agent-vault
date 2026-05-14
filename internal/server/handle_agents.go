@@ -101,15 +101,15 @@ func (s *Server) handleAgentInviteList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type inviteItem struct {
-		ID               int              `json:"id"`
-		Token            string           `json:"token,omitempty"`
-		AgentName        string           `json:"agent_name"`
-		AgentRole        string           `json:"agent_role"`
-		Status           string           `json:"status"`
-		Vaults           []agentVaultJSON `json:"vaults"`
-		CreatedAt        string           `json:"created_at"`
-		ExpiresAt        string           `json:"expires_at"`
-		RedeemedAt       *string          `json:"redeemed_at,omitempty"`
+		ID             int              `json:"id"`
+		Token          string           `json:"token,omitempty"`
+		AgentName      string           `json:"agent_name"`
+		AgentRole      string           `json:"agent_role"`
+		Status         string           `json:"status"`
+		Vaults         []agentVaultJSON `json:"vaults"`
+		CreatedAt      string           `json:"created_at"`
+		ExpiresAt      string           `json:"expires_at"`
+		RedeemedAt     *string          `json:"redeemed_at,omitempty"`
 		TokenExpiresAt *string          `json:"token_expires_at,omitempty"`
 	}
 
@@ -230,7 +230,6 @@ func (s *Server) canRevokeAgentInvite(ctx context.Context, actor *Actor, inv *st
 
 //go:embed persistent_instructions_admin.txt
 var persistentInstructionsAdmin string
-
 
 // reservedVaultNames are names that conflict with /vaults/* frontend routes.
 // Keep in sync with vaultsLayoutRoute children in web/src/router.tsx.
@@ -443,13 +442,14 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type agentItem struct {
-		Name             string           `json:"name"`
-		Role             string           `json:"role"`
-		Status           string           `json:"status"`
-		Vaults           []agentVaultJSON `json:"vaults"`
-		CreatedAt        string           `json:"created_at"`
-		RevokedAt        *string          `json:"revoked_at,omitempty"`
+		Name           string           `json:"name"`
+		Role           string           `json:"role"`
+		Status         string           `json:"status"`
+		Vaults         []agentVaultJSON `json:"vaults"`
+		CreatedAt      string           `json:"created_at"`
+		RevokedAt      *string          `json:"revoked_at,omitempty"`
 		TokenExpiresAt *string          `json:"token_expires_at,omitempty"`
+		InviteID       *int             `json:"invite_id,omitempty"`
 	}
 
 	items := make([]agentItem, 0, len(agents))
@@ -480,7 +480,10 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		seen[ag.Name] = true
 	}
 
-	// Include agents with pending invites (not yet redeemed).
+	// Include agents with pending invites (not yet redeemed) as rows with
+	// status="pending" and InviteID set. The UI relies on InviteID to route
+	// revokes for those rows through DELETE /v1/agents/invites/by-id/{id};
+	// without it, the active-agent revoke path 404s on pending names.
 	// Non-owners only see invites targeting vaults they can access.
 	pendingInvites, _ := s.store.ListInvites(ctx, "pending")
 	for _, inv := range pendingInvites {
@@ -503,12 +506,14 @@ func (s *Server) handleAgentList(w http.ResponseWriter, r *http.Request) {
 		for _, v := range inv.Vaults {
 			vaults = append(vaults, agentVaultJSON{VaultName: v.VaultName, VaultRole: v.VaultRole})
 		}
+		inviteID := inv.ID
 		items = append(items, agentItem{
 			Name:      inv.AgentName,
 			Role:      inv.AgentRole,
 			Status:    "pending",
 			Vaults:    vaults,
 			CreatedAt: inv.CreatedAt.Format(time.RFC3339),
+			InviteID:  &inviteID,
 		})
 		seen[inv.AgentName] = true
 	}
