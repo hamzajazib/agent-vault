@@ -2,9 +2,11 @@ package cmd
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"errors"
+	"time"
 	"fmt"
 	"net"
 	"net/http"
@@ -36,7 +38,7 @@ func newRunCmd(examplePrefix string) *cobra.Command {
 	c := &cobra.Command{
 		Use:   "run [flags] -- <command> [args...]",
 		Short: "Wrap an agent process with Agent Vault access",
-		Long: `Start an agent process (e.g. claude, agent, codex, hermes, opencode) with an Agent Vault session.
+		Long: `Start an agent process (e.g. claude, agent, codex, hermes, opencode, openclaw) with an Agent Vault session.
 Everything after -- is treated as the command to execute.
 
 Two modes:
@@ -57,15 +59,18 @@ Environment variables set on the child:
   AGENT_VAULT_VAULT  — vault the session is scoped to
 
 The child also inherits HTTPS_PROXY / HTTP_PROXY / NO_PROXY /
-NODE_USE_ENV_PROXY plus the root CA trust variables (SSL_CERT_FILE,
-NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE, GIT_SSL_CAINFO,
-DENO_CERT) so both HTTPS and plain-HTTP clients transparently route
-through the broker. NODE_USE_ENV_PROXY=1 enables Node.js built-in proxy
-support (v22.21.0+) so fetch() and http.get()/https.get() honor the
-proxy env natively. HTTPS_PROXY and HTTP_PROXY both point at the same
-TLS-wrapped proxy URL — the listener accepts CONNECT for https://
-upstreams and absolute-form forward-proxy requests for http:// on the
-same port. The root CA PEM is written to ~/.agent-vault/mitm-ca.pem.
+NODE_USE_ENV_PROXY / OPENCLAW_PROXY_URL plus the root CA trust variables
+(SSL_CERT_FILE, NODE_EXTRA_CA_CERTS, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE,
+GIT_SSL_CAINFO, DENO_CERT) so both HTTPS and plain-HTTP clients
+transparently route through the broker. NODE_USE_ENV_PROXY=1 enables
+Node.js built-in proxy support (v22.21.0+) so fetch() and
+http.get()/https.get() honor the proxy env natively. OPENCLAW_PROXY_URL
+feeds OpenClaw's Proxyline managed proxy (OpenClaw requires this in
+addition to proxy.enabled in its config). HTTPS_PROXY and HTTP_PROXY
+both point at the same proxy URL — the listener accepts
+CONNECT for https:// upstreams and absolute-form forward-proxy requests
+for http:// on the same port. The root CA PEM is written to
+~/.agent-vault/mitm-ca.pem.
 
 Example:
   ` + examplePrefix + ` -- claude
@@ -201,6 +206,9 @@ func runCmdRunE(cmd *cobra.Command, args []string) error {
 	//    Agent Vault skill (only when not already present).
 	if name, dir, ok := agentSkillDir(args[0]); ok {
 		maybeInstallSkills(name, dir)
+		if name == "OpenClaw" {
+			maybeConfigureOpenClaw()
+		}
 	}
 
 	// 8. Confirm, then exec — replaces this process entirely so the child
@@ -225,6 +233,7 @@ var knownAgents = []struct {
 	{[]string{"codex"}, "Codex", ".agents"},
 	{[]string{"hermes"}, "Hermes", ".hermes"},
 	{[]string{"opencode"}, "OpenCode", ".opencode"},
+	{[]string{"openclaw"}, "OpenClaw", ".openclaw"},
 }
 
 // agentSkillDir returns the display name and skills base directory for a
@@ -287,6 +296,37 @@ func maybeInstallSkills(agentName, baseDir string) {
 		}
 	}
 	fmt.Fprintf(os.Stderr, "%s Installed Agent Vault skills for %s.\n", successText("agent-vault:"), agentName)
+}
+
+// maybeConfigureOpenClaw ensures OpenClaw's managed proxy and trusted env
+// proxy settings are enabled. Without these, OpenClaw ignores the proxy
+// env vars that agent-vault run injects. Uses `openclaw config set` so the
+// settings persist across gateway restarts. Errors are non-fatal — the
+// proxy still works for provider API calls via HTTPS_PROXY; these settings
+// extend coverage to web_fetch and gateway-internal traffic.
+func maybeConfigureOpenClaw() {
+	openclawBin, err := exec.LookPath("openclaw")
+	if err != nil {
+		return
+	}
+	settings := []struct{ key, value string }{
+		{"proxy.enabled", "true"},
+		{"tools.web.fetch.useTrustedEnvProxy", "true"},
+	}
+	var ok int
+	for _, s := range settings {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		out, err := exec.CommandContext(ctx, openclawBin, "config", "set", s.key, s.value).CombinedOutput()
+		cancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: could not set OpenClaw config %s: %s\n", s.key, strings.TrimSpace(string(out)))
+		} else {
+			ok++
+		}
+	}
+	if ok > 0 {
+		fmt.Fprintf(os.Stderr, "%s Configured OpenClaw proxy settings (revert with: openclaw config set proxy.enabled false && openclaw config set tools.web.fetch.useTrustedEnvProxy false).\n", successText("agent-vault:"))
+	}
 }
 
 // resolveVaultForAgentMode picks the vault when the token is supplied via env
@@ -380,7 +420,7 @@ func fetchUserVaults(addr, token string) ([]string, error) {
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -496,10 +536,10 @@ func requireMITMEnv(env []string, addr, token, vault, caPath string) ([]string, 
 // default location.
 //
 // Both HTTPS_PROXY and HTTP_PROXY are injected, pointing at the same
-// TLS-wrapped proxy URL. The listener handles CONNECT for https://
+// proxy URL. The listener handles CONNECT for https://
 // upstreams and absolute-form forward-proxy requests for http://.
 func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]string, int, bool, error) {
-	pem, port, enabled, mitmTLS, err := fetchMITMCA(addr)
+	pem, port, enabled, err := fetchMITMCA(addr)
 	if err != nil {
 		return env, 0, false, err
 	}
@@ -532,14 +572,14 @@ func augmentEnvWithMITM(env []string, addr, token, vault, caPath string) ([]stri
 		return env, 0, false, fmt.Errorf("write CA: %w", err)
 	}
 
+
 	env = stripEnvKeys(env, mitmInjectedKeys)
 	env = append(env, isolation.BuildProxyEnv(isolation.ProxyEnvParams{
-		Host:    resolveMITMHost(addr),
-		Port:    port,
-		Token:   token,
-		Vault:   vault,
-		CAPath:  caPath,
-		MITMTLS: mitmTLS,
+		Host:   resolveMITMHost(addr),
+		Port:   port,
+		Token:  token,
+		Vault:  vault,
+		CAPath: caPath,
 	})...)
 	return env, port, true, nil
 }
@@ -591,7 +631,7 @@ func requestScopedSession(addr, adminToken, vault string, ttlSeconds int) (strin
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+adminToken)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("could not reach server at %s: %w", addr, err)
 	}

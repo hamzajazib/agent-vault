@@ -1,7 +1,7 @@
-// Package mitm implements a TLS-wrapped HTTP/1.1 proxy ingress for
-// agent traffic.
+// Package mitm implements an HTTP/1.1 forward-proxy ingress for agent
+// traffic.
 //
-// A Proxy accepts two request shapes on the same TLS-wrapped listener:
+// A Proxy accepts two request shapes on the same listener:
 //
 //   - CONNECT host:port — for HTTPS upstreams. The proxy hijacks the
 //     connection, terminates client-side TLS using a leaf minted on
@@ -16,11 +16,10 @@
 //     to the upstream over plain HTTP, and applies the same credential
 //     injection, host policy, and request logging as the CONNECT path.
 //
-// The listener itself is TLS-wrapped so that the CONNECT handshake and
-// the absolute-form request line (both of which carry session tokens
-// in Proxy-Authorization) are encrypted. Clients use HTTPS_PROXY and
-// HTTP_PROXY pointing at https://... and trust the same CA that signs
-// the per-host MITM leaves.
+// The listener is plain HTTP (standard forward-proxy convention).
+// Clients use HTTPS_PROXY and HTTP_PROXY pointing at http://... and
+// trust the CA that signs the per-host MITM leaves for upstream
+// certificate verification.
 //
 // v1 scope: HTTP/1.1 only (ALPN pinned). HTTPS upstreams must use
 // CONNECT — the forward-proxy path rejects https:// URLs to avoid
@@ -29,8 +28,8 @@ package mitm
 
 import (
 	"context"
-	"crypto/tls"
 	"log/slog"
+	"crypto/tls"
 	"net"
 	"net/http"
 	"sync/atomic"
@@ -50,7 +49,6 @@ type Proxy struct {
 	sessions    brokercore.SessionResolver
 	creds       brokercore.CredentialProvider
 	httpServer  *http.Server
-	tlsConfig   *tls.Config
 	upstream    *http.Transport
 	isListening atomic.Bool
 	baseURL     string // externally-reachable control-plane URL for help links
@@ -85,7 +83,7 @@ func New(addr string, opts Options) *Proxy {
 		MaxIdleConns:          100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Minute,
 	}
 
 	sink := opts.LogSink
@@ -101,24 +99,6 @@ func New(addr string, opts Options) *Proxy {
 		logger:    opts.Logger,
 		rateLimit: opts.RateLimit,
 		logSink:   sink,
-	}
-
-	p.tlsConfig = &tls.Config{
-		MinVersion: tls.VersionTLS12,
-		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
-			sni := hello.ServerName
-			if sni == "" {
-				// No SNI (IP-literal connection per RFC 6066). Use the
-				// local address the client connected to so the cert
-				// SAN matches regardless of IPv4/IPv6 or wildcard bind.
-				if host, _, err := net.SplitHostPort(hello.Conn.LocalAddr().String()); err == nil && host != "" {
-					sni = host
-				} else {
-					sni = "127.0.0.1"
-				}
-			}
-			return opts.CA.MintLeaf(sni)
-		},
 	}
 
 	p.httpServer = &http.Server{
@@ -156,14 +136,16 @@ func (p *Proxy) ListenAndServe() error {
 	return p.Serve(l)
 }
 
-// Serve accepts connections on the provided listener, wrapping it in
-// TLS so the CONNECT handshake is encrypted. It blocks until Shutdown
-// is called, returning http.ErrServerClosed in that case.
+// Serve accepts connections on the provided listener. The listener
+// itself is plain HTTP (standard forward-proxy convention); TLS is
+// only used inside CONNECT tunnels where the MITM presents a leaf
+// cert to the client. It blocks until Shutdown is called, returning
+// http.ErrServerClosed in that case.
 // Useful for tests that need to bind :0 and learn the resulting port.
 func (p *Proxy) Serve(l net.Listener) error {
 	p.isListening.Store(true)
 	defer p.isListening.Store(false)
-	return p.httpServer.Serve(tls.NewListener(l, p.tlsConfig))
+	return p.httpServer.Serve(l)
 }
 
 // Shutdown gracefully stops the listener. In-flight CONNECT tunnels are

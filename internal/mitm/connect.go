@@ -15,7 +15,7 @@ import (
 // mitmIPKey is the rate-limit key for the per-IP flood gate shared by
 // the CONNECT and absolute-form forward-proxy paths. X-Forwarded-For
 // doesn't exist at this layer (the HTTP request is tunnelled or sent
-// over a TLS-wrapped proxy connection); only the direct peer IP is
+// over the proxy connection); only the direct peer IP is
 // meaningful. CONNECT and forward share one budget — a peer is one peer
 // regardless of which ingress shape they use.
 func mitmIPKey(r *http.Request) string {
@@ -162,7 +162,7 @@ func writeAuthError(w http.ResponseWriter, err error) {
 		writeProxyAuthChallenge(w, "invalid or expired session")
 	case errors.Is(err, brokercore.ErrAgentVaultAmbiguous),
 		errors.Is(err, brokercore.ErrNoVaultContext):
-		http.Error(w, "set vault via HTTPS_PROXY=https://<token>:<vault>@host:port", http.StatusBadRequest)
+		http.Error(w, "set vault via HTTPS_PROXY=http://<token>:<vault>@host:port", http.StatusBadRequest)
 	case errors.Is(err, brokercore.ErrVaultHintMismatch),
 		errors.Is(err, brokercore.ErrVaultAccessDenied):
 		http.Error(w, "forbidden", http.StatusForbidden)
