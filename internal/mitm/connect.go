@@ -132,11 +132,14 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 	listener := newOneShotListener(tlsConn)
 	srv := &http.Server{
 		Handler: p.forwardHandler(target, host, scope),
-		// Slow-loris defense: without these the tunnel can drip bytes
-		// forever and pin a proxy concurrency slot.
+		// ReadHeaderTimeout and ReadTimeout bound the request side
+		// (slow-loris defense). IdleTimeout caps keep-alives between
+		// requests. The upstream transport's ResponseHeaderTimeout
+		// (5 min) prevents stalled upstreams. WriteTimeout is 30 min
+		// to allow long-running streaming transfers (git clone, SSE).
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       60 * time.Second,
-		WriteTimeout:      5 * time.Minute, // upstream streaming can be legit
+		WriteTimeout:      30 * time.Minute,
 		IdleTimeout:       2 * time.Minute,
 		ConnState: func(c net.Conn, state http.ConnState) {
 			// Either terminal state means Serve should return. The
