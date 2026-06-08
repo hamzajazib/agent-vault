@@ -3001,8 +3001,9 @@ func (s *SQLiteStore) InsertRequestLogs(ctx context.Context, rows []RequestLog) 
 	stmt, err := tx.PrepareContext(ctx, `
 		INSERT INTO request_logs
 		  (vault_id, actor_type, actor_id, ingress, method, host, path,
-		   matched_service, credential_keys, status, latency_ms, error_code, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		   matched_service, credential_keys, status, latency_ms, error_code,
+		   auth_scheme, auth_header, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("preparing request_logs insert: %w", err)
 	}
@@ -3024,6 +3025,7 @@ func (s *SQLiteStore) InsertRequestLogs(ctx context.Context, rows []RequestLog) 
 		if _, err := stmt.ExecContext(ctx,
 			r.VaultID, r.ActorType, r.ActorID, r.Ingress, r.Method, r.Host, r.Path,
 			r.MatchedService, string(keysJSON), r.Status, r.LatencyMs, r.ErrorCode,
+			r.AuthScheme, r.AuthHeader,
 			createdAt.UTC().Format(time.DateTime),
 		); err != nil {
 			return fmt.Errorf("inserting request_log: %w", err)
@@ -3120,6 +3122,44 @@ func (s *SQLiteStore) ListRequestLogs(ctx context.Context, opts ListRequestLogsO
 		}
 		rl.CreatedAt, _ = time.Parse(time.DateTime, createdAt)
 		out = append(out, rl)
+	}
+	return out, rows.Err()
+}
+
+// ListUnmatchedHosts returns distinct hostnames from request_logs that did
+// not match any configured service and resulted in an auth failure (401/403)
+// or proxy denial (error_code 'no_match'). Results are ordered by most
+// recent failure first. Capped at 500 rows as a defense-in-depth limit.
+func (s *SQLiteStore) ListUnmatchedHosts(ctx context.Context, vaultID string) ([]UnmatchedHost, error) {
+	// auth_scheme and auth_header are bare columns in a GROUP BY with
+	// MAX(created_at). SQLite guarantees these come from the row that
+	// produced the MAX, giving us the auth detection from the most
+	// recent request per host.
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT host, COUNT(*) AS request_count, MAX(created_at) AS last_seen,
+		       auth_scheme, auth_header
+		FROM request_logs
+		WHERE vault_id = ?
+		  AND matched_service = ''
+		  AND host != ''
+		  AND (error_code = 'no_match' OR status IN (401, 403))
+		GROUP BY host
+		ORDER BY MAX(created_at) DESC, host ASC
+		LIMIT 500`, vaultID)
+	if err != nil {
+		return nil, fmt.Errorf("listing unmatched hosts: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var out []UnmatchedHost
+	for rows.Next() {
+		var uh UnmatchedHost
+		var lastSeen string
+		if err := rows.Scan(&uh.Host, &uh.RequestCount, &lastSeen, &uh.AuthScheme, &uh.AuthHeader); err != nil {
+			return nil, fmt.Errorf("scanning unmatched host: %w", err)
+		}
+		uh.LastSeen, _ = time.Parse(time.DateTime, lastSeen)
+		out = append(out, uh)
 	}
 	return out, rows.Err()
 }
