@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -62,7 +63,8 @@ type Server struct {
 	store       Store
 	encKey      []byte // 32-byte encryption key, held in memory while running
 	notifier    *notify.Notifier
-	initialized bool                // true when at least one owner account exists
+	initialized    bool                // true when at least one owner account exists
+	lastInitCheck  atomic.Int64        // unix-millis of last DB check for initialization (throttle)
 	baseURL     string              // externally-reachable base URL (e.g. "https://sb.example.com")
 	skillCLI    []byte              // embedded CLI skill content (served at GET /v1/skills/cli)
 	mitm        *mitm.Proxy         // transparent MITM proxy; nil only when --mitm-port 0
@@ -77,12 +79,6 @@ type Server struct {
 	// backstop. Bounded by a periodic prune (see runTouchCachePruner)
 	// that drops entries past the throttle window.
 	touchCache sync.Map // raw token (string) -> time.Time
-	// vaultServiceMu serializes the load → mutate → save cycle for
-	// /services handlers and proposal apply. SQLite's MaxOpenConns(1)
-	// only serializes individual statements; without this lock two
-	// concurrent upserts can both pass collision checks against the
-	// same pre-state.
-	vaultServiceMu sync.Map // vaultID (string) -> *sync.Mutex
 	// infisicalClient is nil when INFISICAL_URL is unset; create handlers
 	// reject kind="infisical" then.
 	infisicalClient *infisical.Client
@@ -95,13 +91,10 @@ type Server struct {
 	telemetry        *telemetry.Telemetry
 }
 
-// lockVaultServices acquires the per-vault mutation lock. Callers MUST
-// defer the returned unlock func.
-func (s *Server) lockVaultServices(vaultID string) func() {
-	v, _ := s.vaultServiceMu.LoadOrStore(vaultID, &sync.Mutex{})
-	mu := v.(*sync.Mutex)
-	mu.Lock()
-	return mu.Unlock
+// lockVaultServices acquires the per-vault mutation lock via the store's
+// LockVault. Callers MUST defer the returned unlock func.
+func (s *Server) lockVaultServices(ctx context.Context, vaultID string) (func(), error) {
+	return s.store.LockVault(ctx, vaultID)
 }
 
 // RateLimit returns the server's rate-limit registry. Exported so the
@@ -409,7 +402,12 @@ type Store interface {
 	TrimRequestLogsToCap(ctx context.Context, vaultID string, cap int64) (int64, error)
 	VaultIDsWithLogs(ctx context.Context) ([]string, error)
 
+	// LockVault acquires an exclusive advisory lock for the given vault.
+	LockVault(ctx context.Context, vaultID string) (unlock func(), err error)
+
 	Close() error
+	Ping(ctx context.Context) error
+	DialectName() string
 }
 
 // contextKey is an unexported type for context keys in this package.
@@ -957,14 +955,30 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 }
 
 // requireInitialized returns 503 when no owner account exists yet.
+// In multi-instance (Postgres HA) deployments another instance may have
+// handled registration, so we re-check the DB when the in-memory flag is
+// false, throttled to once every 2 seconds to avoid per-request queries.
 func (s *Server) requireInitialized(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !s.initialized {
-			jsonStatus(w, http.StatusServiceUnavailable, map[string]string{
-				"error":   "not_initialized",
-				"message": "No owner account exists. Run 'agent-vault auth register' to create the first account.",
-			})
-			return
+			now := time.Now().UnixMilli()
+			if now-s.lastInitCheck.Load() < 2000 {
+				jsonStatus(w, http.StatusServiceUnavailable, map[string]string{
+					"error":   "not_initialized",
+					"message": "No owner account exists. Run 'agent-vault auth register' to create the first account.",
+				})
+				return
+			}
+			s.lastInitCheck.Store(now)
+			if count, err := s.store.CountUsers(r.Context()); err == nil && count > 0 {
+				s.initialized = true
+			} else {
+				jsonStatus(w, http.StatusServiceUnavailable, map[string]string{
+					"error":   "not_initialized",
+					"message": "No owner account exists. Run 'agent-vault auth register' to create the first account.",
+				})
+				return
+			}
 		}
 		next(w, r)
 	}
